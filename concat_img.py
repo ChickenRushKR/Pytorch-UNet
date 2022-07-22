@@ -1,9 +1,9 @@
 import cv2
 import os
 
-img_dir = 'result/sample_img/'
-pred_dir = 'result/sample_pred/'
-true_dir = 'result/sample_true/'
+img_dir = 'result/test_data2_concat/'
+pred_dir = 'result/pred/'
+true_dir = 'result/test_mask3/'
 concat_dir = 'result/concat/'
 
 img_list = os.listdir(img_dir)
@@ -15,9 +15,10 @@ for i in range(len(img_list)):
     mask_gray = cv2.imread(pred_dir + pred_list[i])       # 파일 읽기 (grayscale)
     true_gray = cv2.imread(true_dir + true_list[i])       # 파일 읽기 (grayscale)
     true_gray *= 255
-    concat = cv2.add(img_gray, mask_gray)
-    concat2 = cv2.add(img_gray, true_gray)
+    concat = cv2.add(img_gray * 0.7, mask_gray * 0.3)
+    concat2 = cv2.add(img_gray * 0.7, true_gray * 0.3)
     print('pred:', img_list[i], pred_list[i])
     print('true:', img_list[i], true_list[i])
-    cv2.imwrite(concat_dir + 'pred_' + img_list[i], concat)
-    cv2.imwrite(concat_dir + 'true_' + img_list[i], concat2)
+    filename = img_list[i].split('.')[0]
+    cv2.imwrite(concat_dir + filename + '_pred.png', concat)
+    cv2.imwrite(concat_dir + filename + '_true.png', concat2)

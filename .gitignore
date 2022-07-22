@@ -7,3 +7,6 @@ checkpoints/
 venv/
 .idea/
 wandb/
+seg_masks/
+seg_masks.zip
+result/
