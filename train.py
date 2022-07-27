@@ -16,7 +16,7 @@ from utils.dice_score import dice_loss
 from evaluate import evaluate
 from unet import UNet
 
-dir_img = Path('./data/train_data2_concat/')
+dir_img = Path('./data/train_data2_concat2/')
 dir_mask = Path('./data/train_mask3/')
 dir_checkpoint = Path('./checkpoints/')
 
