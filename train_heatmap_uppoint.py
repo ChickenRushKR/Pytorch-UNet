@@ -16,11 +16,42 @@ from utils.dice_score import dice_loss
 from evaluate import evaluate
 from unet import UNet
 
-# dir_img = Path('../data/train_data2_concat2/')
-dir_img = Path('../data/train_data2_concat2/')
+dir_img = Path('./data/train_data2_concat2/')
 dir_mask = Path('./data/train_mask3/')
-dir_point = Path('./data/train_heat/')
+point_csv = Path('./uppoint_647.csv')
 dir_checkpoint = Path('./checkpoints/')
+
+
+class AdaptiveWingLoss(nn.Module):
+    def __init__(self, omega=14, theta=0.5, epsilon=1, alpha=2.1):
+        super(AdaptiveWingLoss, self).__init__()
+        self.omega = omega
+        self.theta = theta
+        self.epsilon = epsilon
+        self.alpha = alpha
+
+    def forward(self, pred, target):
+        '''
+        :param pred: BxNxHxH
+        :param target: BxNxHxH
+        :return:
+        '''
+        
+
+        y = target.permute(0,3,1,2)
+        y_hat = pred
+        # print(y.shape, y_hat.shape)
+        delta_y = (y - y_hat).abs()
+        delta_y1 = delta_y[delta_y < self.theta]
+        delta_y2 = delta_y[delta_y >= self.theta]
+        y1 = y[delta_y < self.theta]
+        y2 = y[delta_y >= self.theta]
+        loss1 = self.omega * torch.log(1 + torch.pow(delta_y1 / self.omega, self.alpha - y1))
+        A = self.omega * (1 / (1 + torch.pow(self.theta / self.epsilon, self.alpha - y2))) * (self.alpha - y2) * (
+            torch.pow(self.theta / self.epsilon, self.alpha - y2 - 1)) * (1 / self.epsilon)
+        C = self.theta * A - self.omega * torch.log(1 + torch.pow(self.theta / self.epsilon, self.alpha - y2))
+        loss2 = A * delta_y2 - C
+        return (loss1.sum() + loss2.sum()) / (len(loss1) + len(loss2))
 
 
 def train_net(net,
@@ -33,12 +64,15 @@ def train_net(net,
               img_scale: float = 1.0,
               amp: bool = False):
     # 1. Create dataset
-    dataset = BasicDataset(dir_img, dir_mask, dir_point, img_scale)
+    
+    dataset = BasicDataset(dir_img, dir_mask, point_csv, img_scale)
+
     
     # 2. Split into train / validation partitions
     n_val = int(len(dataset) * val_percent)
     n_train = len(dataset) - n_val
     train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
+    
     # 3. Create data loaders
     loader_args = dict(batch_size=batch_size, num_workers=4, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
@@ -79,6 +113,7 @@ def train_net(net,
             for batch in train_loader:
                 images = batch['image']
                 true_masks = batch['mask']
+                true_points = batch['point']
 
                 assert images.shape[1] == net.n_channels, \
                     f'Network has been defined with {net.n_channels} input channels, ' \
@@ -87,13 +122,18 @@ def train_net(net,
 
                 images = images.to(device=device, dtype=torch.float32)
                 true_masks = true_masks.to(device=device, dtype=torch.long)
+                true_points = true_points.to(device=device, dtype=torch.float32)
 
                 with torch.cuda.amp.autocast(enabled=amp):
-                    masks_pred = net(images)
+                    # masks_pred = net(images)        # net output mask and heatmap
+                    masks_pred, points_pred = net(images)        # net output mask and heatmap
+                    # print(masks_pred.shape, points_pred.shape)
+                    awingloss = AdaptiveWingLoss()
                     loss = criterion(masks_pred, true_masks) \
                            + dice_loss(F.softmax(masks_pred, dim=1).float(),
-                                       F.one_hot(true_masks, net.n_classes).permute(0, 3, 1, 2).float(),
-                                       multiclass=True)
+                                       F.one_hot(true_masks, 2).permute(0, 3, 1, 2).float(),
+                                       multiclass=True) \
+                            + awingloss(points_pred, true_points)
 
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
@@ -106,7 +146,8 @@ def train_net(net,
                 experiment.log({
                     'train loss': loss.item(),
                     'step': global_step,
-                    'epoch': epoch
+                    'epoch': epoch,
+                    'awingloss': awingloss(points_pred, true_points)
                 })
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
@@ -132,6 +173,10 @@ def train_net(net,
                                 'true': wandb.Image(true_masks[0].float().cpu()),
                                 'pred': wandb.Image(masks_pred.argmax(dim=1)[0].float().cpu()),
                             },
+                            # 'points': {
+                                # 'true': wandb.Image(true_points[0].float().cpu()),
+                                # 'pred': wandb.Image(points_pred).argmax(dim=1)[0].float().cpu(),
+                            # },
                             'step': global_step,
                             'epoch': epoch,
                             **histograms
@@ -145,7 +190,7 @@ def train_net(net,
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
-    parser.add_argument('--epochs', '-e', metavar='E', type=int, default=5, help='Number of epochs')
+    parser.add_argument('--epochs', '-e', metavar='E', type=int, default=100, help='Number of epochs')
     parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=1, help='Batch size')
     parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-5,
                         help='Learning rate', dest='lr')
@@ -155,7 +200,7 @@ def get_args():
                         help='Percent of the data that is used as validation (0-100)')
     parser.add_argument('--amp', action='store_true', default=False, help='Use mixed precision')
     parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
-    parser.add_argument('--classes', '-c', type=int, default=2, help='Number of classes')
+    parser.add_argument('--classes', '-c', type=int, default=3, help='Number of classes')
 
     return parser.parse_args()
 

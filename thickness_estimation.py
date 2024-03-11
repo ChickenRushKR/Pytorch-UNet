@@ -6,7 +6,6 @@ import pandas as pd
 import numpy as np
 import cv2
 import math
-import time
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -198,15 +197,8 @@ if __name__ == '__main__':
     except:
         print(out_cat_dir, 'is already existed')
         exit()
-    out_data_dir = './result/' + time_now + '/data/'
-    try:
-        os.mkdir(out_data_dir)
-        print(out_data_dir, 'was created.')
-    except:
-        print(out_data_dir, 'is already existed')
-        exit()
     
-    excel = pd.read_csv('points.csv')
+    excel = pd.read_csv('hm_result.csv')
     net = UNet(n_channels=3, n_classes=4, bilinear=args.bilinear)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -220,45 +212,63 @@ if __name__ == '__main__':
     print('Model loaded!')
 
     for i, filename in enumerate(in_files):
+
         logging.info(f'\nPredicting image {args.inputdir + filename} ...')
-        print(f'Predicting image {filename} ...')
-        # gt_pts = excel[excel['Name']==filename].values[0][2:]
-        # keypoints = [gt_pts[0],gt_pts[1],gt_pts[2],gt_pts[3]]
+        # print(f'Predicting image {filename} ...')
+        gt_pts = excel[excel['name']==filename].values[0][1:]
+        keypoints = [gt_pts[0],gt_pts[1]]
+        keypoints = np.asarray(keypoints, dtype=np.float32)
+        
         img = Image.open(args.inputdir + filename)
-        # img_gray = Image.open(args.inputdir + filename).convert("L")
-        start_time = time.time()
+        img_gray = Image.open(args.inputdir + filename).convert("L")
+        
         mask, pred_point = predict_img(net=net,
                            full_img=img,
                            scale_factor=args.scale,
                            out_threshold=args.mask_threshold,
                            device=device)
-        elapsed_time = time.time() - start_time
-        print(elapsed_time)
         # heatmap = convertToHM(img, keypoints)
-        kps_preds = calcKeypoints(img, pred_point)
+        # kps_preds = calcKeypoints(img, pred_point)
 
         if not args.no_save:
-            kpt_result = show_keypoints(img, predictions=kps_preds)
+            # kpt_result = show_keypoints(img, predictions=kps_preds)
             
-            cv2.imwrite(out_pred_dir + filename.split('.')[0] + 'kpt.' + filename.split('.')[1], kpt_result)
+            # cv2.imwrite(out_pred_dir + filename.split('.')[0] + 'kpt.' + filename.split('.')[1], kpt_result)
             out_filename = out_files[i]
             result = mask_to_image(mask)
+
             result.save(out_pred_dir + filename)
-            img.save(out_data_dir + filename)
 
             imgnp=np.array(img)  
             imgcv=cv2.cvtColor(imgnp, cv2.COLOR_RGB2GRAY)
+
             resultcv=np.array(result)  
             # resultcv=cv2.cvtColor(resultnp, cv2.COLOR_RGB2GRAY)
 
             ret, resultcv = cv2.threshold(resultcv, 30, 255, cv2.THRESH_BINARY)
             resultcv = cv2.GaussianBlur(resultcv, (0, 0), 1)
+
+            thickness = 0
+            
+            for y in range(0,int(keypoints[1]) + 10):
+                for x in range(64):
+                    resultcv[y][x] = 0
+            
+            for y in range(int(keypoints[1]) + 10, int(keypoints[1]) + 150):
+                for x in range(64):
+                    if resultcv[y][x] > 200:
+                        thickness += 1
+            print(filename, thickness / 140 * 1.5)
+            for y in range(int(keypoints[1]) + 150, 512):
+                for x in range(64):
+                    resultcv[y][x] = 0
+            # resultcv = cv2.GaussianBlur(resultcv, (0, 0), 1)
+            
             concat = cv2.add(imgcv * 0.7, resultcv * 0.3)
             cv2.imwrite(out_cat_dir + filename, concat)
 
             logging.info(f'Mask saved to {out_pred_dir + filename}')
             
-
         if args.viz:
             logging.info(f'Visualizing results for image {filename}, close to continue...')
             plot_img_and_mask(img, mask)
